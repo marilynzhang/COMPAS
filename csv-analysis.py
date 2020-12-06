@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 from collections import Counter
 
-PERCENT_ARREST_BIAS  = 0.50
+PERCENT_ARREST_BIAS  = 0.40
 
 @dataclass
 class ConfusionMatrix:
@@ -77,7 +77,7 @@ def preprocess(data):
                         if row[Indices.score_text.value] != "N/A":
                             # analysis: only considering a specific age range
                             age = int(row[Indices.age.value])
-                            if age > 20 and age < 60:
+                            if age >= 30:
                                 # analysis: only considering men for now
                                 if row[Indices.sex.value] == "Male":
                                     filtered.append(row)
@@ -115,10 +115,9 @@ def prior_to_score_regression(filtered):
     compas_risk_scores = np.array(compas_risk_scores)
     reg = LinearRegression().fit(num_priors, compas_risk_scores)
     print("R^2 of linear regression model:", reg.score(num_priors, compas_risk_scores))
-    plt.scatter(num_priors, compas_risk_scores)
-    plt.show()
-    print(reg.intercept_)
-    print(reg.coef_)
+    # plt.scatter(num_priors, compas_risk_scores, alpha=.1)
+    # plt.plot(num_priors, reg.coef_*num_priors + reg.intercept_)
+    # plt.show()
     return reg
 
 # the statistics for white defendants do not change
@@ -190,13 +189,39 @@ print("Original Black Defendant Statistics----------")
 black_cm_orig = calculate_black_statistics(reg, black_original_prior_crimes, black_original_recidivated, filtered)
 black_cm_orig.print_stats()
 
+fprs = []
+fnrs = []
+accuracies = []
+# repeatedly simulate the arrest rate bias
+for i in range(200):
+    sampled_prior_crimes = sample_crimes(black_original_prior_crimes, percent_arrest_bias = PERCENT_ARREST_BIAS)
+    sampled_recidivated = sample_crimes(black_original_recidivated, percent_arrest_bias = PERCENT_ARREST_BIAS)
+    black_cm = calculate_black_statistics(reg, sampled_prior_crimes, sampled_recidivated, filtered)
+    fprs.append(black_cm.get_fpr())
+    accuracies.append(black_cm.get_accuracy())
+    fnrs.append(black_cm.get_fnr())
+    # print("Black Defendant Statistics---------")
+    # black_cm.print_stats()
+    total_cm = white_cm.combine_matrices(black_cm)
+    # print("Combined Statistics--------")
+    # total_cm.print_stats()
 
-# the below will go in a for loop
-sampled_prior_crimes = sample_crimes(black_original_prior_crimes, percent_arrest_bias = PERCENT_ARREST_BIAS)
-sampled_recidivated = sample_crimes(black_original_recidivated, percent_arrest_bias = PERCENT_ARREST_BIAS)
-black_cm = calculate_black_statistics(reg, sampled_prior_crimes, sampled_recidivated, filtered)
-print("Black Defendant Statistics---------")
-black_cm.print_stats()
-total_cm = white_cm.combine_matrices(black_cm)
-print("Combined Statistics--------")
-total_cm.print_stats()
+# Figure 1: FPR vs Accuracy
+plt.scatter(fprs, accuracies, alpha=.1, label="Black Defendants - Corrected for Policing Bias*")
+plt.scatter(black_cm_orig.get_fpr(), black_cm_orig.get_accuracy(), label="Black Defendants - Original*")
+plt.scatter(white_cm.get_fpr(), white_cm.get_accuracy(), label="White Defendants - Original*")
+plt.xlabel("False Positive Rate")
+plt.ylabel("Accuracy")
+plt.title("Modeling Correcting Policing Bias' Impact on Black Defendants' False Positive Rate and Accuracy")
+plt.legend()
+plt.show()
+
+# Figure 2: FPR vs FNR
+plt.scatter(fprs, fnrs, alpha=.1, label="Black Defendants - Corrected for Policing Bias*")
+plt.scatter(black_cm_orig.get_fpr(), black_cm_orig.get_fnr(), label="Black Defendants - Original*")
+plt.scatter(white_cm.get_fpr(), white_cm.get_fnr(), label="White Defendants - Original*")
+plt.xlabel("False Positive Rate")
+plt.ylabel("False Negative Rate")
+plt.title("Modeling Correcting Policing Bias' Impact on Black Defendants' False Positive Rate and False Negative Rate")
+plt.legend()
+plt.show()
