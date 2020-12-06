@@ -3,8 +3,10 @@ from enum import Enum
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from dataclasses import dataclass
+import matplotlib.pyplot as plt
+from collections import Counter
 
-PERCENT_ARREST_BIAS  = 0.03
+PERCENT_ARREST_BIAS  = 0.50
 
 @dataclass
 class ConfusionMatrix:
@@ -27,6 +29,10 @@ class ConfusionMatrix:
         print("Accuracy:", self.get_accuracy())
         print("False positive rate:", self.get_fpr())
         print("False negative rate:", self.get_fnr())
+        print("Number recidivated:", self.tp + self.fn)
+        print("Number not recidivated:", self.fp + self.tn)
+        print("Number given medium/high risk score:", self.tp + self.fp)
+        print("Number given low risk score:", self.tn + self.fn)
 
     def combine_matrices(self, other) -> float:
         return ConfusionMatrix(self.tp + other.tp, self.tn + other.tn, self.fp + other.fp, self.fn + other.fn)
@@ -69,8 +75,9 @@ def preprocess(data):
                     if row[Indices.c_charge_degree.value] != "0":
                         # data quality: must have had 2 years outside jail or recidivated
                         if row[Indices.score_text.value] != "N/A":
-                            # analysis: only considering those over 45 for now
-                            if row[Indices.age_cat.value] == "Greater than 45":
+                            # analysis: only considering a specific age range
+                            age = int(row[Indices.age.value])
+                            if age > 20 and age < 60:
                                 # analysis: only considering men for now
                                 if row[Indices.sex.value] == "Male":
                                     filtered.append(row)
@@ -108,6 +115,10 @@ def prior_to_score_regression(filtered):
     compas_risk_scores = np.array(compas_risk_scores)
     reg = LinearRegression().fit(num_priors, compas_risk_scores)
     print("R^2 of linear regression model:", reg.score(num_priors, compas_risk_scores))
+    plt.scatter(num_priors, compas_risk_scores)
+    plt.show()
+    print(reg.intercept_)
+    print(reg.coef_)
     return reg
 
 # the statistics for white defendants do not change
@@ -119,7 +130,7 @@ def calculate_white_statistics(reg, filtered):
     for row in filtered:
         if row[Indices.race.value] == "Caucasian":
             num_priors = int(row[Indices.priors_count.value])
-            proj_risk_score = reg.predict(num_priors)
+            proj_risk_score = reg.predict(np.array([num_priors]).reshape(-1,1))[0]
             # recidivated
             if row[Indices.is_recid.value] == "1":
                 if proj_risk_score < 5:
@@ -134,21 +145,58 @@ def calculate_white_statistics(reg, filtered):
                     fp += 1
     return ConfusionMatrix(tp, tn, fp, fn)
 
+# the statistics for black defendants change due to arrest rate bias
 def calculate_black_statistics(reg, prior_crimes, recidivated, filtered):
-    pass
+    tp = 0
+    tn = 0
+    fp = 0
+    fn = 0
+    for row in filtered:
+        if row[Indices.race.value] == "African-American":
+            id = row[Indices.id.value]
+            num_priors = np.count_nonzero(prior_crimes == id)
+            proj_risk_score = reg.predict(np.array([num_priors]).reshape(-1,1))[0]
+            # recidivated
+            if id in set(recidivated):
+                if proj_risk_score < 5:
+                    fn += 1
+                else:
+                    tp += 1
+            # did not recidivate
+            else:
+                if proj_risk_score < 5:
+                    tn += 1
+                else:
+                    fp += 1
+    return ConfusionMatrix(tp, tn, fp, fn)
 
 
 # data[i] is info for the ith defendant; data[0] is the column headers
 all_data = read_csv("compas-scores-two-years.csv")
+ages = []
+for row in all_data:
+    ages.append(row[Indices.age.value])
+occurrence_count = Counter(ages)
+print(occurrence_count.most_common(1)[0][0])
 filtered = preprocess(all_data)
 print("Number of defendants:", len(filtered))
-original_prior_crimes = extract_prior_crimes(filtered)
-original_recidivated = extract_recidivated(filtered)
+black_original_prior_crimes = np.array(extract_prior_crimes(filtered))
+black_original_recidivated = np.array(extract_recidivated(filtered))
 reg = prior_to_score_regression(filtered)
 white_cm = calculate_white_statistics(reg, filtered)
+print("White Defendant Statistics----------")
 white_cm.print_stats()
-# the below will go in a for loop
-sampled_prior_crimes = sample_crimes(original_prior_crimes, percent_arrest_bias = PERCENT_ARREST_BIAS)
-sampled_recidivated = sample_crimes(original_recidivated, percent_arrest_bias = PERCENT_ARREST_BIAS)
+print("Original Black Defendant Statistics----------")
+black_cm_orig = calculate_black_statistics(reg, black_original_prior_crimes, black_original_recidivated, filtered)
+black_cm_orig.print_stats()
 
-print(reg.predict(3))
+
+# the below will go in a for loop
+sampled_prior_crimes = sample_crimes(black_original_prior_crimes, percent_arrest_bias = PERCENT_ARREST_BIAS)
+sampled_recidivated = sample_crimes(black_original_recidivated, percent_arrest_bias = PERCENT_ARREST_BIAS)
+black_cm = calculate_black_statistics(reg, sampled_prior_crimes, sampled_recidivated, filtered)
+print("Black Defendant Statistics---------")
+black_cm.print_stats()
+total_cm = white_cm.combine_matrices(black_cm)
+print("Combined Statistics--------")
+total_cm.print_stats()
